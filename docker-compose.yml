@@ -1,0 +1,242 @@
+version: '3.8'
+
+services:
+  mysql_banking_app:
+    build: ./mysql
+    container_name: mysql_banking_app
+    environment:
+      - MYSQL_ROOT_PASSWORD=your_secure_root_pwd_2024
+      - MYSQL_DATABASE=banking_core_db
+      - MYSQL_USER=banking_user
+      - MYSQL_PASSWORD=secure_banking_pwd_2024
+    networks:
+      banking_network:
+        ipv4_address: 172.25.0.9
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "banking_user", "-p$$MYSQL_PASSWORD"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  keycloak_postgre_db:
+    image: postgres:latest
+    container_name: keycloak_postgre_db
+    environment:
+      - POSTGRES_DB=keycloak_db
+      - POSTGRES_USER=keycloak_admin
+      - POSTGRES_PASSWORD=secure_keycloak_pwd_2024
+    networks:
+      banking_network:
+        ipv4_address: 172.25.0.10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak_admin -d keycloak_db"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  keycloak_web:
+    image: quay.io/keycloak/keycloak:latest
+    container_name: keycloak_web
+    command: ["start-dev", "--import-realm"]
+    environment:
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_ADMIN_PASSWORD=admin
+      - KC_DB=postgres
+      - KC_DB_URL=jdbc:postgresql://keycloak_postgre_db:5432/keycloak_db
+      - KC_DB_USERNAME=keycloak_admin
+      - KC_DB_PASSWORD=secure_keycloak_pwd_2024
+      - KC_PROXY=edge
+    ports:
+      - "8080:8080"
+    networks:
+      banking_network:
+        ipv4_address: 172.25.0.11
+    depends_on:
+      - keycloak_postgre_db
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json
+    restart: unless-stopped
+
+  openzipkin_server:
+    image: openzipkin/zipkin:latest
+    container_name: openzipkin_server
+    ports:
+      - "9411:9411"
+    networks:
+      banking_network:
+        ipv4_address: 172.25.0.12
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      banking_network:
+        ipv4_address: 172.25.0.13
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    restart: unless-stopped
+
+  config-server:
+    build: ../banking-config-server
+    container_name: banking-config-server
+    ports:
+      - "8090:8090"
+    networks:
+      banking_network:
+        ipv4_address: 172.25.0.8
+    environment:
+      - SERVER_PORT=8090
+      - SPRING_PROFILES_ACTIVE=docker
+    restart: unless-stopped
+
+  service-registry:
+    build: ../banking-service-registry
+    container_name: banking-service-registry
+    ports:
+      - "8081:8081"
+    networks:
+      banking_network:
+        ipv4_address: 172.25.0.7
+    environment:
+      - SERVER_PORT=8081
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8090
+    depends_on:
+      - config-server
+    restart: unless-stopped
+
+  api-gateway:
+    build: ../banking-api-gateway
+    container_name: banking-api-gateway
+    ports:
+      - "8082:8082"
+    networks:
+      banking_network:
+        ipv4_address: 172.25.0.6
+    environment:
+      - SERVER_PORT=8082
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8090
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://service-registry:8081/eureka/
+    depends_on:
+      - config-server
+      - service-registry
+    restart: unless-stopped
+
+  user-service:
+    build: ../banking-user-service
+    container_name: banking-user-service
+    ports:
+      - "8083:8083"
+    networks:
+      banking_network:
+        ipv4_address: 172.25.0.5
+    environment:
+      - SERVER_PORT=8083
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8090
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://service-registry:8081/eureka/
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql_banking_app:3306/banking_core_db
+      - SPRING_DATASOURCE_USERNAME=banking_user
+      - SPRING_DATASOURCE_PASSWORD=secure_banking_pwd_2024
+      - KEYCLOAK_SERVER_URL=http://keycloak_web:8080
+    depends_on:
+      - config-server
+      - service-registry
+      - mysql_banking_app
+      - keycloak_web
+    restart: unless-stopped
+
+  fund-transfer-service:
+    build: ../banking-fund-transfer-service
+    container_name: banking-fund-transfer-service
+    ports:
+      - "8084:8084"
+    networks:
+      banking_network:
+        ipv4_address: 172.25.0.4
+    environment:
+      - SERVER_PORT=8084
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8090
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://service-registry:8081/eureka/
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql_banking_app:3306/banking_core_db
+      - SPRING_DATASOURCE_USERNAME=banking_user
+      - SPRING_DATASOURCE_PASSWORD=secure_banking_pwd_2024
+      - SPRING_RABBITMQ_HOST=rabbitmq
+    depends_on:
+      - config-server
+      - service-registry
+      - mysql_banking_app
+      - rabbitmq
+    restart: unless-stopped
+
+  utility-payment-service:
+    build: ../banking-utility-payment-service
+    container_name: banking-utility-payment-service
+    ports:
+      - "8085:8085"
+    networks:
+      banking_network:
+        ipv4_address: 172.25.0.3
+    environment:
+      - SERVER_PORT=8085
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8090
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://service-registry:8081/eureka/
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql_banking_app:3306/banking_core_db
+      - SPRING_DATASOURCE_USERNAME=banking_user
+      - SPRING_DATASOURCE_PASSWORD=secure_banking_pwd_2024
+      - SPRING_RABBITMQ_HOST=rabbitmq
+    depends_on:
+      - config-server
+      - service-registry
+      - mysql_banking_app
+      - rabbitmq
+    restart: unless-stopped
+
+  core-banking-service:
+    build: ../banking-core-service
+    container_name: banking-core-service
+    ports:
+      - "8092:8092"
+    networks:
+      banking_network:
+        ipv4_address: 172.25.0.2
+    environment:
+      - SERVER_PORT=8092
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8090
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://service-registry:8081/eureka/
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql_banking_app:3306/banking_core_db
+      - SPRING_DATASOURCE_USERNAME=banking_user
+      - SPRING_DATASOURCE_PASSWORD=secure_banking_pwd_2024
+    depends_on:
+      - config-server
+      - service-registry
+      - mysql_banking_app
+    restart: unless-stopped
+
+networks:
+  banking_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16
+
+volumes:
+  mysql_data:
+  postgres_data:

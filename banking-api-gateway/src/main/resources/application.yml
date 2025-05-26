@@ -1,0 +1,65 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: banking-api-gateway
+  profiles:
+    active: dev
+  cloud:
+    config:
+      enabled: true
+      uri: http://localhost:8090
+      fail-fast: true
+    gateway:
+      discovery:
+        locator:
+          enabled: true
+          lower-case-service-id: true
+      routes:
+        - id: banking-user-service
+          uri: lb://banking-user-service
+          predicates:
+            - Path=/api/users/**
+          filters:
+            - RewritePath=/api/users/(?<path>.*), /api/users/$\{path}
+        - id: banking-fund-transfer-service
+          uri: lb://banking-fund-transfer-service
+          predicates:
+            - Path=/api/transfers/**
+          filters:
+            - RewritePath=/api/transfers/(?<path>.*), /api/transfers/$\{path}
+        - id: banking-utility-payment-service
+          uri: lb://banking-utility-payment-service
+          predicates:
+            - Path=/api/payments/**
+          filters:
+            - RewritePath=/api/payments/(?<path>.*), /api/payments/$\{path}
+        - id: banking-core-service
+          uri: lb://banking-core-service
+          predicates:
+            - Path=/api/banking/**
+          filters:
+            - RewritePath=/api/banking/(?<path>.*), /api/banking/$\{path}
+
+eureka:
+  client:
+    register-with-eureka: true
+    fetch-registry: true
+    service-url:
+      defaultZone: http://localhost:8081/eureka/
+  instance:
+    prefer-ip-address: true
+    hostname: localhost
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: '*'
+  endpoint:
+    health:
+      show-details: always
+  zipkin:
+    tracing:
+      endpoint: http://localhost:9411/api/v2/spans
